@@ -119,4 +119,134 @@ class Ear : Service() {
     }
 
     private fun ensureModel(): Boolean {
-        if
+        if (model != null) return true
+        return try {
+            val dir = File(filesDir, "model-ru")
+            if (!File(dir, "am/final.mdl").exists()) copyAssets("model-ru", dir)
+            model = Model(dir.absolutePath)
+            true
+        } catch (e: Exception) {
+            update("Ошибка модели: " + e.message)
+            false
+        }
+    }
+
+    private fun textOf(json: String, final: Boolean): String = try {
+        val o = JSONObject(json)
+        if (final) o.optString("text") else o.optString("partial")
+    } catch (e: Exception) { "" }
+
+    private fun loop() {
+        if (!ensureModel()) return
+        val rate = 16000
+        val minBuf = AudioRecord.getMinBufferSize(
+            rate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
+        )
+        if (minBuf <= 0) { update("Микрофон недоступен"); return }
+        val bufSize = maxOf(minBuf, 4096)
+        val buf = ByteArray(bufSize)
+        var record: AudioRecord? = null
+        var idle: Recognizer? = null
+        var cmd: Recognizer? = null
+        var recording = false
+        try {
+            record = AudioRecord(
+                MediaRecorder.AudioSource.VOICE_RECOGNITION, rate,
+                AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufSize * 2
+            )
+            idle = Recognizer(model, rate.toFloat(), WAKE)
+            update("Скажите «телефон»")
+
+            while (running) {
+                val pause = muted || micBusy || speaking || (!alwaysMode && !screenOn)
+                if (pause) {
+                    if (recording) {
+                        try { record.stop() } catch (e: Exception) {}
+                        recording = false
+                    }
+                    Thread.sleep(200)
+                    continue
+                }
+                if (!recording) {
+                    try { record.startRecording() } catch (e: Exception) {
+                        Thread.sleep(500); continue
+                    }
+                    recording = true
+                }
+
+                val n = record.read(buf, 0, buf.size)
+                if (n <= 0) { Thread.sleep(50); continue }
+
+                val inCommand = System.currentTimeMillis() < commandUntil
+                val rec: Recognizer = if (inCommand) {
+                    if (cmd == null) cmd = Recognizer(model, rate.toFloat())
+                    cmd!!
+                } else {
+                    if (cmd != null) { cmd!!.close(); cmd = null }
+                    if (idle == null) idle = Recognizer(model, rate.toFloat(), WAKE)
+                    idle!!
+                }
+
+                val final = rec.acceptWaveForm(buf, n)
+                val text = textOf(if (final) rec.result else rec.partialResult, final)
+                if (text.isNotEmpty() && process(text, final)) {
+                    idle?.close()
+                    idle = Recognizer(model, rate.toFloat(), WAKE)
+                }
+            }
+        } catch (e: Exception) {
+            update("Ошибка: " + e.message)
+        } finally {
+            try { record?.stop() } catch (e: Exception) {}
+            record?.release()
+            idle?.close()
+            cmd?.close()
+        }
+    }
+
+    private fun process(text: String, final: Boolean): Boolean {
+        val t = text.lowercase(Locale("ru")).trim()
+        val now = System.currentTimeMillis()
+
+        if (now >= commandUntil) {
+            if (t.contains("телефон")) {
+                commandUntil = now + 8000L
+                update("Слушаю команду…")
+                say("слушаю")
+            }
+            return false
+        }
+
+        if (!final || t.isEmpty()) return false
+        commandUntil = 0L
+
+        when {
+            t.contains("замолчи") || t.contains("не слушай") -> {
+                muted = true
+                update("Пауза до включения экрана")
+                say("замолчал")
+            }
+            t.contains("слушай всегда") -> {
+                alwaysMode = true
+                update("Слушаю всегда")
+                say("слушаю всегда")
+            }
+            t.contains("слушай при экране") -> {
+                alwaysMode = false
+                update("Слушаю при включённом экране")
+                say("хорошо")
+            }
+            else -> {
+                val v = Voice.instance
+                if (v == null) {
+                    update("Служба спецвозможностей не включена")
+                    say("включите службу в специальных возможностях")
+                } else {
+                    update("Команда: $t")
+                    v.execute(t)
+                }
+            }
+        }
+        return true
+    }
+}
