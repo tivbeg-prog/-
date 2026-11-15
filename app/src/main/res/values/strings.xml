@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="app_name">Голос</string>
+    <string name="app_name">GoloPom</string>
     <string name="service_desc">Управление телефоном голосом на русском языке. Служба читает элементы экрана и нажимает их по вашей команде.</string>
 </resources>
